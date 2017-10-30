@@ -1,0 +1,12 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+*.obj
+*.pdb
+*.db
+*.opendb
+/DepthFirst/.vs/DepthFirst/v14
+/DepthFirst/Debug
+/DepthFirst/DepthFirst/Debug
+/Data
