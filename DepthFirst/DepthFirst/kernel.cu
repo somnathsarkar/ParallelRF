@@ -31,7 +31,8 @@ __global__ void histogramKernel(int *target, int *mask, int *hist){
 		atomicAdd(hist+target[index],1);
 }
 
-float giniImpurity(int *target, int *mask,int samples){
+//evaluate split using items in mask only
+std::pair<int,float> giniImpurity(int *target, int *mask,int samples){
 	int *hist = new int[10], *dev_hist,*dev_mask;
 	cudaMalloc((void**)&dev_hist, 10 * sizeof(int));
 	cudaMemset(dev_hist, 0, 10 * sizeof(int));
@@ -54,22 +55,18 @@ float giniImpurity(int *target, int *mask,int samples){
 	cudaFree(dev_hist);
 	cudaFree(dev_mask);
 	delete[] hist;
-	return sz;
-	if (!sz)
-		return 1;
-	return 1 - prefixprob;
+	return{ sz,1 - prefixprob };
 }
 
+//depth first training
 void dfs(int *data, int *target, int features, int samples, int depth, int *mask, int pos = 1, int max_depth = 10, int min_split = 100) {
+	//stop condition
 	if (depth >= max_depth)
 		return;
-	int num = 0;
-	for (int i = 0; i < samples; i++)
-		num += mask[i];
-	if (!num)
-		return;
+	//create feature threshold pairs
 	for (int i = 0; i < 100; i++)
 		feature_threshold[i] = { rand() % features,rand() % 256 };
+	//evaluate each feature threshold pair impurity
 	for(int i = 0; i<100; i++){
 		int *dev_mask,*new_mask;
 		cudaMalloc((void**)&dev_mask, samples * sizeof(int));
@@ -82,16 +79,16 @@ void dfs(int *data, int *target, int features, int samples, int depth, int *mask
 		cudaMemcpy(d1_mask, new_mask, samples * sizeof(int), cudaMemcpyDeviceToHost);
 		for (int i = 0; i < samples; i++)
 			d2_mask[i] = mask[i] - d1_mask[i];
-		//printf("ALL GOOD IN HOOD\n");
-		float imp1 = giniImpurity(target, d1_mask,samples);
-		float imp2 = giniImpurity(target, d2_mask,samples);
+		std::pair<int,float> imp1 = giniImpurity(target, d1_mask,samples);
+		std::pair<int,float> imp2 = giniImpurity(target, d2_mask,samples);
 		//printf("%f %f\n", imp1, imp2);
-		ft_impurity[i] = std::max(imp1, imp2);
+		ft_impurity[i] = ((imp1.first*imp1.second) + (imp2.first*imp2.second)) / (imp1.first+imp2.first);
 		cudaFree(dev_mask);
 		cudaFree(new_mask);
 		delete[] d1_mask;
 		delete[] d2_mask;
 	}
+	//select best impurity and make the split
 	float *min_imp = std::min_element(ft_impurity,ft_impurity+100);
 	std::pair<int, int> ft = *(feature_threshold+(min_imp - ft_impurity));
 	int *dev_mask, *new_mask;
@@ -99,7 +96,7 @@ void dfs(int *data, int *target, int features, int samples, int depth, int *mask
 	cudaMalloc((void**)&new_mask, samples * sizeof(int));
 	cudaMemset(new_mask, 0, samples * sizeof(int));
 	cudaMemcpy(dev_mask, mask, samples * sizeof(int), cudaMemcpyHostToDevice);
-	//kernel here
+	//make split and save to file
 	printf("NODE %d: %f\n",pos,*min_imp);
 	xout << pos << " " << ft.first << " " << ft.second << "\n";
 	featureresponseKernel << <(samples/256)+1, 256 >> > (data, dev_mask, new_mask, samples, ft.first, ft.second);
@@ -107,13 +104,14 @@ void dfs(int *data, int *target, int features, int samples, int depth, int *mask
 	cudaMemcpy(d1_mask, new_mask, samples * sizeof(int), cudaMemcpyDeviceToHost);
 	for(int i = 0; i<samples; i++)
 		d2_mask[i] = mask[i] - d1_mask[i];
-	float imp1 = giniImpurity(target, d1_mask, samples);
-	float imp2 = giniImpurity(target, d2_mask, samples);
+	std::pair<int,float> imp1 = giniImpurity(target, d1_mask, samples);
+	std::pair<int,float> imp2 = giniImpurity(target, d2_mask, samples);
 	cudaFree(dev_mask);
 	cudaFree(new_mask);
-	if(imp1>0)
+	// if split is not redundant keep going
+	if(imp1.first>0&&imp1.second>0)
 		dfs(data, target, features, samples, depth + 1, d1_mask, pos*2, max_depth, min_split);
-	if(imp2>0)
+	if(imp2.first>0&&imp2.second>0)
 		dfs(data, target, features, samples, depth + 1, d2_mask, (pos*2)+1, max_depth, min_split);
 	delete[] d1_mask;
 	delete[] d2_mask;
@@ -122,7 +120,7 @@ void dfs(int *data, int *target, int features, int samples, int depth, int *mask
 int main()
 {
 	srand(565858);
-	xout.open("../../Data/rf-10.txt");
+	xout.open("../../Data/rf-10-gini.txt");
 	const int samples = 42000, features = 28 * 28;
 	data = new int[features*samples];
 	target = new int[samples];
@@ -164,7 +162,7 @@ int main()
     return 0;
 }
 
-// Helper function for using CUDA to add vectors in parallel.
+// Helper function for using CUDA.
 cudaError_t dftrain(const int *data, const int *target, unsigned int features, unsigned int samples)
 {
     int *dev_data, *dev_target;
